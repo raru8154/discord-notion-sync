@@ -3,6 +3,8 @@ import requests
 import json
 import time
 import re
+from datetime import datetime
+import pytz
 
 # --- 設定エリア ---
 # type: "page" (親ページの下に子ページを作る) or "database" (データベースに行を追加する)
@@ -28,6 +30,13 @@ CONFIG = [
         "db_prop_name": "Name" # あなたのNotionの列名に合わせてください（英語なら "Name"）
     },
 ]
+
+REMINDER_CONFIG = {
+    "enabled": True,
+    "target_hour": 22,
+    "discord_channel_id": "1470637540750131364",
+    "message": "📖 **日記書いた？？**"
+}
 # ----------------
 
 # GitHub Secretsから取得
@@ -172,6 +181,30 @@ def process_channel(config, current_state):
 
     return new_last_id
 
+def send_discord_message(channel_id, message):
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    headers = { "Authorization": f"Bot {DISCORD_TOKEN}", "Content-Type": "application/json" }
+    payload = { "content": message }
+    resp = requests.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        print(f"Discord Message Error {channel_id}: {resp.text}")
+
+def check_and_send_reminders(state):
+    if not REMINDER_CONFIG["enabled"]: return
+
+    jst = pytz.timezone('Asia/Tokyo')
+    now = datetime.now(jst)
+    today_str = now.strftime('%Y-%m-%d')
+
+    if now.hour != REMINDER_CONFIG["target_hour"]: return
+
+    if state.get("last_reminder_date") == today_str:
+        return
+    
+    print("Sending diary reminder...")
+    send_discord_message(REMINDER_CONFIG["discord_channel_id"], REMINDER_CONFIG["message"])
+    state["last_reminder_date"] = today_str
+
 def main():
     state = get_state()
     for config in CONFIG:
@@ -182,6 +215,12 @@ def main():
                 state[config["discord_channel_id"]] = updated_id
         except Exception as e:
             print(f"Error processing {config['name']}: {e}")
+    
+    try:
+        check_and_send_reminders(state)
+    except Exception as e:
+        print(f"Error sending reminders: {e}")
+    
     save_state(state)
 
 if __name__ == "__main__":
