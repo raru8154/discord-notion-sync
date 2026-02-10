@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import time
+import re
 
 # --- 設定エリア ---
 # type: "page" (親ページの下に子ページを作る) or "database" (データベースに行を追加する)
@@ -46,42 +47,80 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
-def create_notion_content(config, content):
-    url = 'https://api.notion.com/v1/pages'
-    
-    # タイトル作成 (冒頭30文字)
-    title_text = content[:30] + "..." if len(content) > 30 else content
-    
-    # 本文ブロック作成
-    children = []
-    for line in content.split('\n'):
-        children.append({
+def parse_line_to_block(line):
+    # 箇条書き (- または *) の判定
+    if re.match(r'^[\-\*]\s+', line):
+        content = re.sub(r'^[\-\*]\s+', '', line)
+        return {
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {
+                "rich_text": [{ "type": "text", "text": { "content": content } }]
+            }
+        }
+    # 番号付きリスト (1. など) の判定
+    elif re.match(r'^\d+\.\s+', line):
+        content = re.sub(r'^\d+\.\s+', '', line)
+        return {
+            "object": "block",
+            "type": "numbered_list_item",
+            "numbered_list_item": {
+                "rich_text": [{ "type": "text", "text": { "content": content } }]
+            }
+        }
+    # 引用 (> ) の判定
+    elif re.match(r'^>\s+', line):
+        content = re.sub(r'^>\s+', '', line)
+        return {
+            "object": "block",
+            "type": "quote",
+            "quote": {
+                "rich_text": [{ "type": "text", "text": { "content": content } }]
+            }
+        }
+    # それ以外は普通のテキスト
+    else:
+        return {
             "object": "block",
             "type": "paragraph",
             "paragraph": {
                 "rich_text": [{ "type": "text", "text": { "content": line } }]
             }
-        })
+        }
+
+def create_notion_content(config, content):
+    url = 'https://api.notion.com/v1/pages'
+    
+    lines = content.split('\n')
+    
+    # タイトル処理: 1行目をタイトルにする
+    # もし1行しかなければ、本文は空にするか、そのまま入れるか...
+    # ここでは「1行目は必ずタイトル扱いして、本文からは削除する」ロジックにします
+    title_text = lines[0]
+    body_lines = lines[1:] if len(lines) > 1 else []
+    
+    # もしタイトルが長すぎたら省略 (念のため)
+    if len(title_text) > 100:
+        title_text = title_text[:100] + "..."
+
+    # 本文ブロック作成 (parse_line_to_blockを使用)
+    children = [parse_line_to_block(line) for line in body_lines if line.strip() != ""]
 
     payload = {
         "children": children
     }
 
-    # 親要素とプロパティの指定 (ページとデータベースで構造が異なるため分岐)
+    # 親要素とプロパティ
     if config['type'] == 'database':
-        # データベースの場合
         payload['parent'] = { "database_id": config['target_id'] }
-        prop_name = config.get('db_prop_name', 'Name') # デフォルトはName
+        prop_name = config.get('db_prop_name', 'Name')
         payload['properties'] = {
-            prop_name: { 
-                "title": [{ "text": { "content": title_text } }] 
-            }
+            prop_name: { "title": [{ "text": { "content": title_text } }] }
         }
     else:
-        # 親ページへの追加の場合
         payload['parent'] = { "page_id": config['target_id'] }
         payload['properties'] = {
-            "title": [{ "text": { "content": title_text } }] # ページの場合はキーが必ず "title"
+            "title": [{ "text": { "content": title_text } }]
         }
 
     headers = {
